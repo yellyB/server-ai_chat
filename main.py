@@ -1,13 +1,15 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from datetime import datetime
 import json
 import asyncio
 from typing import List, Dict, Optional
 import uuid
+from models import ChatMessage, ChatRoom, Character
+from dialogue import dialogue_manager
+from characters_data import create_character_objects
 
 app = FastAPI(title="Escape Game Server", version="1.0.0")
 
@@ -20,35 +22,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 채팅 메시지 모델
-class ChatMessage(BaseModel):
-    id: str
-    room_id: str
-    message: str
-    timestamp: datetime
-    message_type: str = "chat"  # chat, system, notification 등
-    sender: str = "system"  # 민아, 주인공, system
-    is_last: bool = False  # 이 메시지가 시퀀스의 마지막인지 여부
-    part_number: int = 1  # 파트 번호
 
-# 채팅 방 모델
-class ChatRoom(BaseModel):
-    id: str
-    name: str
-    created_at: datetime
-    is_active: bool = True
-
-# 게임 상태 관리
-class GameManager:
-    def __init__(self):
-        self.rooms: Dict[str, Dict] = {}
-        self.connections: Dict[str, List[WebSocket]] = {}
 
 # 채팅 관리자
 class ChatManager:
     def __init__(self):
         self.rooms: Dict[str, ChatRoom] = {}
-        self.sse_connections: Dict[str, List] = {}  # room_id -> [connection_list]
         self.message_queue: Dict[str, List[ChatMessage]] = {}  # room_id -> [messages]
         self.message_sequences: Dict[str, List[ChatMessage]] = {}  # room_id -> [pending_messages]
         self.current_sequence_index: Dict[str, int] = {}  # room_id -> current_index
@@ -62,41 +41,15 @@ class ChatManager:
                 name=room_name or f"Room {room_id}",
                 created_at=datetime.now()
             )
-            self.sse_connections[room_id] = []
             self.message_queue[room_id] = []
-    
-    async def add_sse_connection(self, room_id: str, connection):
-        """SSE 연결 추가"""
-        if room_id not in self.sse_connections:
-            await self.create_room(room_id)
-        self.sse_connections[room_id].append(connection)
-    
-    async def remove_sse_connection(self, room_id: str, connection):
-        """SSE 연결 제거"""
-        if room_id in self.sse_connections and connection in self.sse_connections[room_id]:
-            self.sse_connections[room_id].remove(connection)
     
     async def send_message_to_room(self, room_id: str, message: ChatMessage):
         """특정 방에 메시지 전송"""
-        if room_id in self.sse_connections:
-            # 메시지를 큐에 저장
-            if room_id not in self.message_queue:
-                self.message_queue[room_id] = []
-            self.message_queue[room_id].append(message)
-            
-            # SSE 연결된 클라이언트들에게 전송
-            for connection in self.sse_connections[room_id]:
-                try:
-                    await connection.put(message)
-                except:
-                    # 연결이 끊어진 경우 제거
-                    await self.remove_sse_connection(room_id, connection)
+        # 메시지를 큐에 저장
+        if room_id not in self.message_queue:
+            self.message_queue[room_id] = []
+        self.message_queue[room_id].append(message)
     
-    async def get_room_messages(self, room_id: str, limit: int = 50):
-        """방의 메시지 히스토리 조회"""
-        if room_id in self.message_queue:
-            return self.message_queue[room_id][-limit:]
-        return []
     
     async def setup_message_sequence(self, room_id: str, messages: List[ChatMessage]):
         """메시지 시퀀스 설정"""
@@ -125,13 +78,6 @@ class ChatManager:
         
         return message
     
-    async def send_next_message_in_sequence(self, room_id: str):
-        """시퀀스에서 다음 메시지 전송"""
-        message = await self.get_next_message(room_id)
-        if message:
-            await self.send_message_to_room(room_id, message)
-            return message
-        return None
     
     async def send_next_part_messages(self, room_id: str):
         """다음 파트의 모든 메시지를 배열로 전송"""
@@ -175,44 +121,41 @@ class ChatManager:
         
         return part_messages
     
-    async def join_room(self, room_id: str, player_name: str, websocket: WebSocket):
-        """플레이어가 방에 참가"""
-        if room_id not in self.rooms:
-            await self.create_room(room_id)
+    async def get_specific_part_messages(self, room_id: str, part_number: int):
+        """특정 파트의 메시지들을 조회"""
+        if room_id not in self.message_sequences:
+            return None
         
-        player_id = str(uuid.uuid4())
-        player = {
-            "id": player_id,
-            "name": player_name,
-            "websocket": websocket
-        }
+        sequence = self.message_sequences[room_id]
+        part_messages = [msg for msg in sequence if msg.part_number == part_number]
         
-        self.rooms[room_id]["players"].append(player)
-        self.connections[room_id].append(websocket)
+        if not part_messages:
+            return None
         
-        return player_id
+        # 메시지들을 방에 전송
+        for message in part_messages:
+            await self.send_message_to_room(room_id, message)
+        
+        return part_messages
     
-    async def broadcast_to_room(self, room_id: str, message: dict):
-        """방의 모든 플레이어에게 메시지 전송"""
-        if room_id in self.connections:
-            for connection in self.connections[room_id]:
-                try:
-                    await connection.send_text(json.dumps(message))
-                except:
-                    pass
-    
-    async def remove_player(self, room_id: str, websocket: WebSocket):
-        """플레이어 제거"""
-        if room_id in self.rooms:
-            self.rooms[room_id]["players"] = [
-                p for p in self.rooms[room_id]["players"] 
-                if p["websocket"] != websocket
-            ]
-            if websocket in self.connections[room_id]:
-                self.connections[room_id].remove(websocket)
 
-game_manager = GameManager()
 chat_manager = ChatManager()
+
+
+class CharacterManager:
+    """캐릭터 관리자"""
+    
+    def __init__(self):
+        # 정적 데이터에서 캐릭터 객체 생성
+        character_objects = create_character_objects()
+        self.characters = character_objects
+    
+    def get_characters(self) -> List[Character]:
+        """캐릭터 목록 반환"""
+        return self.characters
+
+
+character_manager = CharacterManager()
 
 @app.get("/")
 async def root():
@@ -228,92 +171,47 @@ async def get_chat_rooms():
     """채팅방 목록 조회"""
     return {"rooms": list(chat_manager.rooms.values())}
 
-@app.get("/chat/rooms/{room_id}/messages")
-async def get_room_messages(room_id: str, limit: int = 50):
-    """특정 방의 메시지 히스토리 조회"""
-    messages = await chat_manager.get_room_messages(room_id, limit)
-    return {"messages": messages}
 
-@app.post("/chat/rooms/{room_id}/send")
-async def send_message_to_room(room_id: str, message_data: dict):
-    """특정 방에 메시지 전송 (서버에서 사용)"""
-    message = ChatMessage(
-        id=str(uuid.uuid4()),
-        room_id=room_id,
-        message=message_data.get("message", ""),
-        timestamp=datetime.now(),
-        message_type=message_data.get("type", "chat"),
-        sender=message_data.get("sender", "system"),
-        is_last=message_data.get("is_last", False)
-    )
-    
-    await chat_manager.send_message_to_room(room_id, message)
-    return {"status": "sent", "message_id": message.id}
+@app.get("/characters")
+async def get_characters():
+    """캐릭터 목록 조회"""
+    characters = character_manager.get_characters()
+    return {"characters": characters}
+
 
 @app.post("/chat/rooms/{room_id}/setup-dialogue")
-async def setup_dialogue(room_id: str):
-    """민아와의 대화 시퀀스 설정"""
+async def setup_dialogue(room_id: str, dialogue_id: str = "mina_dialogue"):
+    """대화 시퀀스 설정"""
     # 채팅방 생성
     await chat_manager.create_room(room_id, "민아와의 대화")
     
-    # 4개 파트로 나누어진 민아의 메시지들
-    dialogue_parts = [
-        # 파트 1
-        [
-            "너 왜 동창회 안왔어?",
-            "안온다는거 겨우 설득해놨더니 갑자기 잠수타버려서",
-            "다들 걱정했잖아!"
-        ],
-        # 파트 2
-        [
-            "엥",
-            "뭔 소리야",
-            "오늘도 주희가 썰렁한 개그 엄청 했는데",
-            "그거 웃기다고 웃어주는 사람이 없어서 반응하느라 힘들었다구ㅠ.ㅠ"
-        ],
-        # 파트 3
-        [
-            "당연하지",
-            "남 말에 리액션 해주고 들어주는게 얼마나 큰건데",
-            "너는 항상 친구들 고민도 침착하게 잘 들어줘서",
-            "우리가 친해진것도 내가 너한테 고민상담하다가 그런거였잖아"
-        ],
-        # 파트 4
-        [
-            "그래서 암튼",
-            "왜 안온거야? 무슨 일 있던거 아니지?"
-        ]
-    ]
-    
-    # 파트별로 ChatMessage 객체 생성
-    messages = []
-    for part_index, part_messages in enumerate(dialogue_parts):
-        for msg_index, message_text in enumerate(part_messages):
-            is_last_in_part = msg_index == len(part_messages) - 1
-            messages.append(ChatMessage(
-                id=str(uuid.uuid4()),
-                room_id=room_id,
-                message=message_text,
-                timestamp=datetime.now(),
-                message_type="chat",
-                sender="민아",
-                is_last=is_last_in_part,
-                part_number=part_index + 1  # 파트 번호 추가
-            ))
+    # 대화 시나리오 가져오기
+    messages = dialogue_manager.get_dialogue(dialogue_id, room_id)
     
     # 메시지 시퀀스 설정
     await chat_manager.setup_message_sequence(room_id, messages)
     
-    return {"status": "dialogue_setup", "total_messages": len(messages)}
+    return {
+        "status": "dialogue_setup",
+        "total_messages": len(messages),
+        "dialogue_id": dialogue_id
+    }
 
-@app.post("/chat/rooms/{room_id}/next")
-async def send_next_message(room_id: str):
-    """다음 메시지 전송"""
-    message = await chat_manager.send_next_message_in_sequence(room_id)
-    if message:
-        return {"status": "sent", "message": message, "is_last": message.is_last}
+@app.post("/chat/rooms/{room_id}/send")
+async def send_message_to_room(room_id: str, message_data: dict = None):
+    """다음 파트 자동 전송"""
+    # 다음 파트 메시지 가져오기
+    part_messages = await chat_manager.send_next_part_messages(room_id)
+    
+    if part_messages:
+        return {
+            "status": "sent", 
+            "part_number": part_messages[0].part_number,
+            "messages": [msg.dict() for msg in part_messages]
+        }
     else:
-        return {"status": "no_more_messages"}
+        return {"status": "no_more_messages", "message": "대화가 끝났습니다"}
+
 
 @app.post("/chat/rooms/{room_id}/next-part")
 async def send_next_part_messages(room_id: str):
@@ -327,6 +225,19 @@ async def send_next_part_messages(room_id: str):
         }
     else:
         return {"status": "no_more_messages", "message": "대화가 끝났습니다"}
+
+@app.post("/chat/rooms/{room_id}/part/{part_number}")
+async def get_specific_part_messages(room_id: str, part_number: int):
+    """특정 파트의 메시지들을 조회"""
+    part_messages = await chat_manager.get_specific_part_messages(room_id, part_number)
+    if part_messages:
+        return {
+            "status": "sent", 
+            "part_number": part_messages[0].part_number,
+            "messages": [msg.dict() for msg in part_messages]
+        }
+    else:
+        return {"status": "part_not_found", "message": f"파트 {part_number}를 찾을 수 없습니다"}
 
 @app.get("/chat/rooms/{room_id}/sse")
 async def chat_sse(room_id: str):
@@ -367,59 +278,6 @@ async def chat_sse(room_id: str):
         }
     )
 
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await websocket.accept()
-    
-    try:
-        # 플레이어 이름 받기
-        data = await websocket.receive_text()
-        player_data = json.loads(data)
-        player_name = player_data.get("player_name", "Anonymous")
-        
-        # 방에 참가
-        player_id = await game_manager.join_room(room_id, player_name, websocket)
-        
-        # 다른 플레이어들에게 새 플레이어 알림
-        await game_manager.broadcast_to_room(room_id, {
-            "type": "player_joined",
-            "player_id": player_id,
-            "player_name": player_name,
-            "room_info": game_manager.rooms[room_id]
-        })
-        
-        # 게임 루프
-        while True:
-            try:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                
-                # 메시지 타입에 따른 처리
-                if message["type"] == "game_action":
-                    # 게임 액션 처리
-                    await game_manager.broadcast_to_room(room_id, {
-                        "type": "game_update",
-                        "action": message["action"],
-                        "player_id": player_id,
-                        "data": message.get("data", {})
-                    })
-                
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                print(f"Error processing message: {e}")
-                break
-                
-    except WebSocketDisconnect:
-        pass
-    finally:
-        # 플레이어 제거
-        await game_manager.remove_player(room_id, websocket)
-        await game_manager.broadcast_to_room(room_id, {
-            "type": "player_left",
-            "player_id": player_id,
-            "room_info": game_manager.rooms.get(room_id, {})
-        })
 
 if __name__ == "__main__":
     import uvicorn

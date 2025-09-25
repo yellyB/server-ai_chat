@@ -76,15 +76,17 @@ python3 run.py
 
 ### 채팅 API
 - `GET /chat/rooms` - 채팅방 목록 조회
-- `GET /chat/rooms/{room_id}/messages` - 방의 메시지 히스토리 조회
-- `POST /chat/rooms/{room_id}/send` - 방에 메시지 전송 (서버용)
-- `POST /chat/rooms/{room_id}/setup-dialogue` - 민아와의 대화 시퀀스 설정
-- `POST /chat/rooms/{room_id}/next` - 다음 메시지 전송
+- `POST /chat/rooms/{room_id}/send` - 다음 파트 자동 전송
+- `POST /chat/rooms/{room_id}/setup-dialogue` - 대화 시퀀스 설정
 - `POST /chat/rooms/{room_id}/next-part` - 다음 파트의 모든 메시지를 배열로 전송
-- `GET /chat/rooms/{room_id}/sse` - SSE 연결로 실시간 메시지 수신
+- `POST /chat/rooms/{room_id}/part/{part_number}` - 특정 파트의 메시지들을 조회
 
-### WebSocket
-- `ws://localhost:8000/ws/{room_id}` - 게임 방에 연결
+### 대화 시나리오 API
+- `GET /dialogues` - 사용 가능한 대화 시나리오 목록 조회
+
+### 캐릭터 API
+- `GET /characters` - 캐릭터 목록 조회
+
 
 ## 🔧 개발 모드
 
@@ -97,16 +99,13 @@ python3 run.py
 
 - **FastAPI**: 웹 프레임워크
 - **Uvicorn**: ASGI 서버
-- **WebSockets**: 실시간 통신
-- **python-socketio**: Socket.IO 지원
+- **SSE**: Server-Sent Events 실시간 통신
 
-## 🎯 게임 서버 기능
+## 🎯 서버 기능
 
-- 다중 플레이어 게임 방 관리
-- 실시간 WebSocket 통신
-- 플레이어 참가/퇴장 처리
-- 게임 액션 브로드캐스팅
 - SSE 기반 실시간 채팅 시스템
+- 파트별 메시지 관리
+- 자동 파트 순차 전송
 
 ## 💬 채팅 API 사용 예시
 
@@ -156,19 +155,78 @@ curl "http://localhost:8000/chat/rooms"
 curl -X POST "http://localhost:8000/chat/rooms/mina_dialogue/setup-dialogue"
 ```
 
-### 6. 다음 메시지 전송
-```bash
-# 시퀀스에서 다음 메시지 전송
-curl -X POST "http://localhost:8000/chat/rooms/mina_dialogue/next"
-```
-
-### 7. 다음 파트 메시지 전송
+### 6. 다음 파트 메시지 전송
 ```bash
 # 다음 파트 전송 (자동으로 순서대로)
 curl -X POST "http://localhost:8000/chat/rooms/mina_dialogue/next-part"
 
 # 계속 호출하면 파트 1, 2, 3, 4 순서로 전송
 # 더 이상 파트가 없으면 "대화가 끝났습니다" 응답
+```
+
+### 7. 특정 파트 메시지 조회
+```bash
+# 파트 1 조회
+curl -X POST "http://localhost:8000/chat/rooms/mina_dialogue/part/1"
+
+# 파트 2 조회
+curl -X POST "http://localhost:8000/chat/rooms/mina_dialogue/part/2"
+
+# 존재하지 않는 파트 조회 시 "파트를 찾을 수 없습니다" 응답
+```
+
+### 8. 캐릭터 목록 조회
+```bash
+# 캐릭터 목록 조회
+curl "http://localhost:8000/characters"
+```
+
+**응답 예시**:
+```json
+{
+  "characters": [
+    {
+      "id": "friend",
+      "name": "Friend",
+      "name_korean": "친구",
+      "description": "친한 친구이자 동창회에서 만난 인물",
+      "relationship": "친구",
+      "is_available": true
+    },
+    {
+      "id": "mother",
+      "name": "Mother", 
+      "name_korean": "엄마",
+      "description": "가족 중 가장 가까운 존재",
+      "relationship": "가족",
+      "is_available": true
+    },
+    {
+      "id": "colleague",
+      "name": "Colleague",
+      "name_korean": "직장동료", 
+      "description": "직장 후배로 함께 일하는 동료",
+      "relationship": "직장동료",
+      "is_available": true
+    },
+    {
+      "id": "sister",
+      "name": "Sister",
+      "name_korean": "여동생",
+      "description": "가족 중 한 명인 여동생", 
+      "relationship": "가족",
+      "is_available": true
+    },
+    {
+      "id": "future_self",
+      "name": "Future Self",
+      "name_korean": "미래의 나",
+      "description": "미래의 자신과의 대화",
+      "relationship": "자기 자신",
+      "is_available": true
+    }
+  ]
+}
 ```
 
 ## 🎭 민아와의 대화 시나리오
