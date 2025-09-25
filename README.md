@@ -76,10 +76,10 @@ python3 run.py
 
 ### 채팅 API
 - `GET /chat/rooms` - 채팅방 목록 조회
-- `POST /chat/rooms/{room_id}/send` - 다음 파트 자동 전송
-- `POST /chat/rooms/{room_id}/setup-dialogue` - 대화 시퀀스 설정
-- `POST /chat/rooms/{room_id}/next-part` - 다음 파트의 모든 메시지를 배열로 전송
-- `POST /chat/rooms/{room_id}/part/{part_number}` - 특정 파트의 메시지들을 조회
+- `POST /chat/rooms/{character_id}/send` - 다음 파트 자동 전송
+- `POST /chat/rooms/{character_id}/setup-dialogue` - 대화 시퀀스 설정
+- `POST /chat/rooms/{character_id}/next-part` - 다음 파트의 모든 메시지를 배열로 전송
+- `POST /chat/rooms/{character_id}/part/{part_number}` - 특정 파트의 메시지들을 조회
 
 ### 대화 시나리오 API
 - `GET /dialogues` - 사용 가능한 대화 시나리오 목록 조회
