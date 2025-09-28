@@ -53,7 +53,7 @@ async def get_dialogue_part(character_id: str, part_number: int):
             "status": "success",
             "character_id": character_id,
             "part_number": part_number,
-            "messages": [{"id": msg.id, "message": msg.message} for msg in part_messages]
+            "messages": [{"id": msg.id, "message": msg.message, "isSentFromMe": False} for msg in part_messages]
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
