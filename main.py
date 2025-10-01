@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from models import Character
-from dialogue import DialogueManager
+from messages import DialogueManager
 from characters_data import create_character_objects
 
 app = FastAPI(title="Chat Server", version="1.0.0")
