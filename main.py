@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from models import Character
-from dialogue import dialogue_manager
+from dialogue import DialogueManager
 from characters_data import create_character_objects
 
 app = FastAPI(title="Chat Server", version="1.0.0")
@@ -42,6 +42,7 @@ async def get_characters():
 @app.get("/dialogue/{character_id}/part/{part_number}")
 async def get_dialogue_part(character_id: str, part_number: int):
     try:
+        dialogue_manager = DialogueManager()
         messages = dialogue_manager.get_dialogue(character_id)
         
         part_messages = [msg for msg in messages if msg.part_number == part_number]
